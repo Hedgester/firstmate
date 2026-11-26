@@ -1,0 +1,837 @@
+Live doctor drive against a real remote macOS host's own Firstmate agents (2026-11-26, macOS 15.5, arm64, gui/501).
+The host's Firstmate code root runs the base template (upstream main 2f000eb4, before this change), so both real agents, dev.firstmate.herdr.fm-remote and dev.firstmate.remote-job, had been written without ProcessType.
+The host's remote second mate was exited first, so the fm-remote Herdr session had no panes and the doctor was free to rewrite and reload the Herdr agent.
+This branch's bin/ (head 8b5c3353) was copied to a temp folder on the host. Its fm-remote-doctor.sh ran over plain ssh with the environment the fixed remote entrypoint gives the doctor (env -i, the entrypoint's child PATH, FM_ROOT_OVERRIDE=<host code root>), so it rendered and repaired the host's real agents for the host's real code root.
+No throwaway or lab launchd jobs were created. Home paths are elided to ~ and the remote Firstmate home to <remote-home>.
+
+Summary of what happened:
+1. Read-only (full-1): launchagent=fixable and remote-job-worker=fixable. Both base-written agents read out of contract, and the fix hint names "process type".
+2. --fix (full-2): both agents were rewritten with ProcessType=Interactive.
+   - The remote job agent was reloaded and the in-run check reported it matching and ready.
+   - The Herdr agent was booted out, but its bootstrap was refused with "Bootstrap failed: 5: Input/output error", so launchagent-loaded and herdr-server stayed fixable. The doctor's reload_launch_agent runs bootstrap right after bootout, without the bootout-cleanup wait the remote-job library uses.
+   - Within seconds the host's own base-code entrypoint reverted the job agent to the base template. The supervising firstmate polls the host every few seconds, and each routed command runs fm_remote_job_ensure_worker against the host's older template.
+3. --fix retry (full-3): the job agent was rewritten and reloaded again, and again reverted by the host's own polling-driven ensure. A worker killed mid-start during these competing reloads left only zero-byte temp files (.pid.*, .start.*, .command.*) in worker.lock. The worker's dead-owner reclaim removes pid, start and command but not those temp files, so its rmdir fails and every respawn exits ("cannot acquire or safely reclaim worker ownership"). This is a separate, pre-existing reclaim bug present in base and head.
+   Herdr launchagent-loaded and herdr-server were still fixable.
+4. Restore with the host's own doctor --fix, routed through fm-on.sh (full-4): the Herdr agent was rewritten to the base template (sha256 identical to before), bootstrapped and started (server running in Aqua). The job worker stayed wedged on the stale lock.
+5. Stale lock repair (full-5): after confirming no worker process was running and the three files were zero bytes, they and the lock directory were removed. launchd restarted the worker.
+6. Confirmation (full-6): the host's own doctor reports "remote second-mate readiness confirmed on this host". Both agents are byte-identical to their starting files.
+
+What this does and does not show:
+- Shown live: base-written agents read out of contract (both), and --fix rewrites both with ProcessType=Interactive. The remote job agent reached ready.
+- Not reached live: the Herdr agent reaching ready under this branch. Its bootstrap failed with I/O error 5 immediately after bootout, on both the first pass and the retry, while the job agent was being reloaded concurrently.
+- Not representative of a normal upgrade: the competing reloads came from running a newer doctor against a host whose own code root was still older. In a real upgrade the host's code root carries the new template, so its routed ensure agrees with the doctor.
+- The host was restored to its starting state afterward.
+
+===== full-1-readonly.txt
+## before (remote second mate exited; fm-remote has no panes)
+2026-11-26T15:57:28Z
+dev.firstmate.herdr.fm-remote.plist ProcessType=absent sha256=247845c3a9d29ff1 mtime=2026-11-25T12:49:24-0800
+dev.firstmate.remote-job.plist ProcessType=absent sha256=77f7a9c79dbf4bc4 mtime=2026-11-26T07:54:25-0800
+  578 Thu Nov 26 07:54:35 2026     /bin/bash ~/Developer/firstmate/bin/fm-remote-job-worker.sh
+  740 Thu Nov 26 07:54:35 2026     /bin/bash ~/Developer/firstmate/bin/fm-remote-job-worker.sh
+42977 Wed Nov 25 12:49:24 2026     ~/.local/bin/herdr server --session fm-remote
+
+## branch doctor read-only (head 8b5c3353)
+mode=check
+path=~/Developer/firstmate/bin:~/.local/bin:~/.nvm/versions/node/v22.17.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+entrypoint=yes
+platform=darwin
+required git=/usr/bin/git
+required jq=/usr/bin/jq
+required herdr=~/.local/bin/herdr
+required tasks-axi=~/.nvm/versions/node/v22.17.0/bin/tasks-axi
+required treehouse=~/.local/bin/treehouse
+required harness=claude:~/.local/bin/claude
+optional tmux=absent
+optional no-mistakes=absent
+optional gh=~/.local/bin/gh
+check herdr=ok: ~/.local/bin/herdr
+check gui-session=ok: gui/501
+check remote-job-worker=fixable: ~/Library/LaunchAgents/dev.firstmate.remote-job.plist does not match the Firstmate-owned Aqua worker contract
+check remote-job-worker-loaded=ok: dev.firstmate.remote-job is loaded in gui/501
+check remote-job-probe=ok: the remote job worker completed the required-tool probe
+check launchagent=fixable: ~/Library/LaunchAgents/dev.firstmate.herdr.fm-remote.plist does not match the current Firstmate-owned contract
+check launchagent-scope=ok: LimitLoadToSessionType=Aqua
+check launchagent-loaded=ok: gui/501/dev.firstmate.herdr.fm-remote matches the effective contract
+check herdr-server=ok: session fm-remote is running in the Aqua login session (pid 42977, launchd)
+check entrypoint-link=ok: ~/.local/bin/fm-remote-entrypoint.sh
+action: remote-job-worker: rerun this command with --fix to write dev.firstmate.remote-job
+action: launchagent: rerun this command with --fix to rewrite its label, program arguments, session scope, process type, restart policy, and log paths
+exit=1
+error: this host is not ready for a remote second mate; unresolved: remote-job-worker launchagent
+
+===== full-2-fix.txt
+## branch doctor --fix (head 8b5c3353)
+mode=fix
+path=~/Developer/firstmate/bin:~/.local/bin:~/.nvm/versions/node/v22.17.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+entrypoint=yes
+platform=darwin
+fix remote-job-worker=applied: installed or reloaded dev.firstmate.remote-job
+fix launchagent=applied: wrote the Aqua-scoped dev.firstmate.herdr.fm-remote launch agent running ~/Developer/firstmate/bin/fm-remote-herdr-guard.sh for ~/.local/bin/herdr via /bin/zsh -l -c
+fix launchagent-loaded=failed: launchctl bootstrap gui/501 refused: Bootstrap failed: 5: Input/output error
+Try re-running the command as root for richer errors.
+required git=/usr/bin/git
+required jq=/usr/bin/jq
+required herdr=~/.local/bin/herdr
+required tasks-axi=~/.nvm/versions/node/v22.17.0/bin/tasks-axi
+required treehouse=~/.local/bin/treehouse
+required harness=claude:~/.local/bin/claude
+optional tmux=absent
+optional no-mistakes=absent
+optional gh=~/.local/bin/gh
+check herdr=ok: ~/.local/bin/herdr
+check gui-session=ok: gui/501
+check remote-job-worker=ok: ~/Library/LaunchAgents/dev.firstmate.remote-job.plist matches the Firstmate-owned Aqua worker contract
+check remote-job-worker-loaded=ok: dev.firstmate.remote-job is loaded in gui/501
+check remote-job-probe=ok: the remote job worker completed the required-tool probe
+check launchagent=ok: ~/Library/LaunchAgents/dev.firstmate.herdr.fm-remote.plist matches the Firstmate-owned contract
+check launchagent-scope=ok: LimitLoadToSessionType=Aqua
+check launchagent-loaded=fixable: dev.firstmate.herdr.fm-remote is not loaded into gui/501
+check herdr-server=fixable: the herdr server for session fm-remote is not running
+check entrypoint-link=ok: ~/.local/bin/fm-remote-entrypoint.sh
+action: launchagent-loaded: rerun this command with --fix to bootstrap and start it
+action: herdr-server: rerun this command with --fix to start it
+exit=1
+
+## immediately after --fix
+2026-11-26T15:58:20Z
+error: this host is not ready for a remote second mate; unresolved: launchagent-loaded herdr-server
+dev.firstmate.herdr.fm-remote.plist ProcessType=Interactive sha256=7625a2cfb6728819 mtime=2026-11-26T07:58:01-0800
+dev.firstmate.remote-job.plist ProcessType=absent sha256=77f7a9c79dbf4bc4 mtime=2026-11-26T07:58:01-0800
+45278 Thu Nov 26 07:58:12 2026     /bin/bash ~/Developer/firstmate/bin/fm-remote-job-worker.sh
+45418 Thu Nov 26 07:58:12 2026     /bin/bash ~/Developer/firstmate/bin/fm-remote-job-worker.sh
+
+## branch doctor read-only re-check
+mode=check
+path=~/Developer/firstmate/bin:~/.local/bin:~/.nvm/versions/node/v22.17.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+entrypoint=yes
+platform=darwin
+required git=/usr/bin/git
+required jq=/usr/bin/jq
+required herdr=~/.local/bin/herdr
+required tasks-axi=~/.nvm/versions/node/v22.17.0/bin/tasks-axi
+required treehouse=~/.local/bin/treehouse
+required harness=claude:~/.local/bin/claude
+optional tmux=absent
+optional no-mistakes=absent
+optional gh=~/.local/bin/gh
+check herdr=ok: ~/.local/bin/herdr
+check gui-session=ok: gui/501
+check remote-job-worker=fixable: ~/Library/LaunchAgents/dev.firstmate.remote-job.plist does not match the Firstmate-owned Aqua worker contract
+check remote-job-worker-loaded=ok: dev.firstmate.remote-job is loaded in gui/501
+check remote-job-probe=ok: the remote job worker completed the required-tool probe
+check launchagent=ok: ~/Library/LaunchAgents/dev.firstmate.herdr.fm-remote.plist matches the Firstmate-owned contract
+check launchagent-scope=ok: LimitLoadToSessionType=Aqua
+check launchagent-loaded=fixable: dev.firstmate.herdr.fm-remote is not loaded into gui/501
+check herdr-server=fixable: the herdr server for session fm-remote is not running
+check entrypoint-link=ok: ~/.local/bin/fm-remote-entrypoint.sh
+action: remote-job-worker: rerun this command with --fix to write dev.firstmate.remote-job
+action: launchagent-loaded: rerun this command with --fix to bootstrap and start it
+action: herdr-server: rerun this command with --fix to start it
+exit=1
+
+2026-11-26T15:58:29Z
+error: this host is not ready for a remote second mate; unresolved: remote-job-worker launchagent-loaded herdr-server
+dev.firstmate.herdr.fm-remote.plist ProcessType=Interactive sha256=7625a2cfb6728819 mtime=2026-11-26T07:58:01-0800
+dev.firstmate.remote-job.plist ProcessType=absent sha256=77f7a9c79dbf4bc4 mtime=2026-11-26T07:58:01-0800
+45278 Thu Nov 26 07:58:12 2026     /bin/bash ~/Developer/firstmate/bin/fm-remote-job-worker.sh
+45418 Thu Nov 26 07:58:12 2026     /bin/bash ~/Developer/firstmate/bin/fm-remote-job-worker.sh
+
+===== full-3-fix-retry.txt
+## branch doctor --fix, second pass (doctor's own 'rerun with --fix' after the bootstrap I/O error)
+mode=fix
+path=~/Developer/firstmate/bin:~/.local/bin:~/.nvm/versions/node/v22.17.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+entrypoint=yes
+platform=darwin
+fix remote-job-worker=failed: remote job worker did not report ready after startup
+required git=/usr/bin/git
+required jq=/usr/bin/jq
+required herdr=~/.local/bin/herdr
+required tasks-axi=~/.nvm/versions/node/v22.17.0/bin/tasks-axi
+required treehouse=~/.local/bin/treehouse
+required harness=claude:~/.local/bin/claude
+optional tmux=absent
+optional no-mistakes=absent
+optional gh=~/.local/bin/gh
+check herdr=ok: ~/.local/bin/herdr
+check gui-session=ok: gui/501
+check remote-job-worker=ok: ~/Library/LaunchAgents/dev.firstmate.remote-job.plist matches the Firstmate-owned Aqua worker contract
+check remote-job-worker-loaded=ok: dev.firstmate.remote-job is loaded in gui/501
+check remote-job-probe=fixable: the remote job worker has not reported a fresh probe
+check launchagent=ok: ~/Library/LaunchAgents/dev.firstmate.herdr.fm-remote.plist matches the Firstmate-owned contract
+check launchagent-scope=ok: LimitLoadToSessionType=Aqua
+check launchagent-loaded=fixable: dev.firstmate.herdr.fm-remote is not loaded into gui/501
+check herdr-server=fixable: the herdr server for session fm-remote is not running
+check entrypoint-link=ok: ~/.local/bin/fm-remote-entrypoint.sh
+action: remote-job-probe: rerun this command with --fix to restart the worker, then rerun through fm-on.sh
+action: launchagent-loaded: rerun this command with --fix to bootstrap and start it
+action: herdr-server: rerun this command with --fix to start it
+exit=1
+
+## immediately after second --fix
+2026-11-26T16:00:24Z
+dev.firstmate.herdr.fm-remote.plist ProcessType=Interactive sha256=7625a2cfb6728819 mtime=2026-11-26T07:58:01-0800
+error: this host is not ready for a remote second mate; unresolved: remote-job-probe launchagent-loaded herdr-server
+dev.firstmate.remote-job.plist ProcessType=absent sha256=77f7a9c79dbf4bc4 mtime=2026-11-26T08:00:24-0800
+
+===== full-4-restore.txt
+## restore: host's own doctor --fix (host code root 2f000eb4), routed through fm-on.sh
+mode=fix
+path=~/Developer/firstmate/bin:~/.local/bin:~/.nvm/versions/node/v22.17.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+entrypoint=yes
+platform=darwin
+fix remote-job-worker=failed: remote job worker did not report ready after startup
+fix launchagent=applied: wrote the Aqua-scoped dev.firstmate.herdr.fm-remote launch agent running ~/Developer/firstmate/bin/fm-remote-herdr-guard.sh for ~/.local/bin/herdr via /bin/zsh -l -c
+fix launchagent-loaded=applied: bootstrapped and started dev.firstmate.herdr.fm-remote in gui/501
+required git=/usr/bin/git
+required jq=/usr/bin/jq
+required herdr=~/.local/bin/herdr
+required tasks-axi=~/.nvm/versions/node/v22.17.0/bin/tasks-axi
+required treehouse=~/.local/bin/treehouse
+required harness=claude:~/.local/bin/claude
+optional tmux=absent
+optional no-mistakes=absent
+optional gh=~/.local/bin/gh
+check herdr=ok: ~/.local/bin/herdr
+check gui-session=ok: gui/501
+check remote-job-worker=ok: ~/Library/LaunchAgents/dev.firstmate.remote-job.plist matches the Firstmate-owned Aqua worker contract
+check remote-job-worker-loaded=ok: dev.firstmate.remote-job is loaded in gui/501
+check remote-job-probe=fixable: the remote job worker has not reported a fresh probe
+check launchagent=ok: ~/Library/LaunchAgents/dev.firstmate.herdr.fm-remote.plist matches the Firstmate-owned contract
+check launchagent-scope=ok: LimitLoadToSessionType=Aqua
+check launchagent-loaded=ok: gui/501/dev.firstmate.herdr.fm-remote matches the effective contract
+check herdr-server=ok: session fm-remote is running in the Aqua login session (pid 43916, launchd)
+check entrypoint-link=ok: ~/.local/bin/fm-remote-entrypoint.sh
+action: remote-job-probe: rerun this command with --fix to restart the worker, then rerun through fm-on.sh
+error: this host is not ready for a remote second mate; unresolved: remote-job-probe
+exit=1
+
+## after restore
+2026-11-26T16:03:33Z
+dev.firstmate.herdr.fm-remote.plist ProcessType=absent sha256=247845c3a9d29ff1 mtime=2026-11-26T08:03:31-0800
+dev.firstmate.remote-job.plist ProcessType=absent sha256=77f7a9c79dbf4bc4 mtime=2026-11-26T08:00:24-0800
+43916 Thu Nov 26 08:03:31 2026     ~/.local/bin/herdr server --session fm-remote
+
+===== full-5-lock-repair.txt
+worker processes running: 0
+total 0
+drwx------   5 <user>  staff  160 Nov 26 07:58 .
+drwx------  11 <user>  staff  352 Nov 26 08:11 ..
+-rw-------   1 <user>  staff    0 Nov 26 07:58 .command.QUViSZ
+-rw-------   1 <user>  staff    0 Nov 26 07:58 .pid.1j6iIo
+-rw-------   1 <user>  staff    0 Nov 26 07:58 .start.RJZwS1
+removed stale lock at 2026-11-26T16:12:41Z
+
+===== full-6-confirm.txt
+## host's own doctor (read-only, routed through fm-on.sh) after lock repair
+mode=check
+path=~/Developer/firstmate/bin:~/.local/bin:~/.nvm/versions/node/v22.17.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+entrypoint=yes
+platform=darwin
+required git=/usr/bin/git
+required jq=/usr/bin/jq
+required herdr=~/.local/bin/herdr
+required tasks-axi=~/.nvm/versions/node/v22.17.0/bin/tasks-axi
+required treehouse=~/.local/bin/treehouse
+required harness=claude:~/.local/bin/claude
+optional tmux=absent
+optional no-mistakes=absent
+optional gh=~/.local/bin/gh
+check herdr=ok: ~/.local/bin/herdr
+check gui-session=ok: gui/501
+check remote-job-worker=ok: ~/Library/LaunchAgents/dev.firstmate.remote-job.plist matches the Firstmate-owned Aqua worker contract
+check remote-job-worker-loaded=ok: dev.firstmate.remote-job is loaded in gui/501
+check remote-job-probe=ok: the remote job worker completed the required-tool probe
+check launchagent=ok: ~/Library/LaunchAgents/dev.firstmate.herdr.fm-remote.plist matches the Firstmate-owned contract
+check launchagent-scope=ok: LimitLoadToSessionType=Aqua
+check launchagent-loaded=ok: gui/501/dev.firstmate.herdr.fm-remote matches the effective contract
+check herdr-server=ok: session fm-remote is running in the Aqua login session (pid 43916, launchd)
+check entrypoint-link=ok: ~/.local/bin/fm-remote-entrypoint.sh
+ok: remote second-mate readiness confirmed on this host
+exit=0
+
+## state
+2026-11-26T16:13:02Z
+dev.firstmate.herdr.fm-remote.plist ProcessType=absent sha256=247845c3a9d29ff1 mtime=2026-11-26T08:03:31-0800
+dev.firstmate.remote-job.plist ProcessType=absent sha256=77f7a9c79dbf4bc4 mtime=2026-11-26T08:00:24-0800
+36939 Thu Nov 26 08:12:51 2026     /bin/bash ~/Developer/firstmate/bin/fm-remote-job-worker.sh
+37082 Thu Nov 26 08:12:51 2026     /bin/bash ~/Developer/firstmate/bin/fm-remote-job-worker.sh
+43916 Thu Nov 26 08:03:31 2026     ~/.local/bin/herdr server --session fm-remote
+
+
+==================================================================
+QUIET RE-DRIVE AT HEAD a883d122 (2026-11-26 ~17:07-17:23Z), with the spawn-type loaded checks
+==================================================================
+Setup: the host's remote second mate was exited, so the fm-remote session had no panes. The supervising firstmate's second-mate probe for this host was held off.
+Midway, a second polling source on the supervising side (its remote-reply watcher for this host) was found still calling the host's base-code entrypoint. That entrypoint re-applies the base job-agent template before staging, and it did so once at 09:08:53 local. The watcher was then retired. Every seq claim in the window (2458-2465) belongs to this drive's own doctor probes.
+
+Results:
+1. Read-only (quiet-1): base-written agents read out of contract on disk (launchagent, remote-job-worker). The new loaded checks also flag both loaded jobs (launchagent-loaded, remote-job-worker-loaded: "does not match the effective ... contract"), and launchctl reports both as "spawn type = daemon (3)".
+2. --fix (quiet-1): the remote job agent was rewritten, reloaded and ready, loaded as "spawn type = interactive (4)". The Herdr agent was rewritten and booted out, then "launchctl bootstrap gui/501 refused: Bootstrap failed: 5: Input/output error". Nothing else was touching the Herdr agent, so this is a real defect: the doctor's reload bootstraps immediately after bootout, without waiting for launchd to finish tearing the old job down.
+3. --fix again ~30 s later (quiet-2, nothing loaded so no bootout): Herdr "bootstrapped and started", server running in Aqua with "spawn type = interactive (4)", launchagent-loaded=ok, herdr-server=ok. During this pass the remote-reply watcher's call re-applied the base job template. The reload killed a starting worker and left zero-byte .pid/.start/.command temp files in worker.lock (a pre-existing reclaim bug). The read-only re-check then showed the new loaded check working live: remote-job-worker-loaded=fixable "does not match the effective ... contract" for the daemon-type job.
+4. Stale lock cleared after confirming no worker ran (quiet-3).
+5. --fix third pass (quiet-4): job agent rewritten and reloaded. Result: "ok: remote second-mate readiness confirmed on this host". Both loaded jobs report "spawn type = interactive (4)", and this was unchanged 60 s later.
+===== quiet-1-drive.txt
+## before
+2026-11-26T17:08:08Z
+dev.firstmate.herdr.fm-remote.plist ProcessType=absent sha256=247845c3a9d29ff1 mtime=2026-11-26T08:03:31-0800
+dev.firstmate.remote-job.plist ProcessType=absent sha256=77f7a9c79dbf4bc4 mtime=2026-11-26T08:00:24-0800
+dev.firstmate.herdr.fm-remote loaded:  state = running; pid = 43916; spawn type = daemon (3);
+dev.firstmate.remote-job loaded:  state = running; pid = 36939; spawn type = daemon (3);
+remote-job seq=2458 worker.lock entries=command pid start 
+36939 Thu Nov 26 08:12:51 2026     /bin/bash ~/Developer/firstmate/bin/fm-remote-job-worker.sh
+37082 Thu Nov 26 08:12:51 2026     /bin/bash ~/Developer/firstmate/bin/fm-remote-job-worker.sh
+43916 Thu Nov 26 08:03:31 2026     ~/.local/bin/herdr server --session fm-remote
+
+## head a883d122 doctor read-only
+mode=check
+path=~/Developer/firstmate/bin:~/.local/bin:~/.nvm/versions/node/v22.17.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+entrypoint=yes
+platform=darwin
+required git=/usr/bin/git
+required jq=/usr/bin/jq
+required herdr=~/.local/bin/herdr
+required tasks-axi=~/.nvm/versions/node/v22.17.0/bin/tasks-axi
+required treehouse=~/.local/bin/treehouse
+required harness=claude:~/.local/bin/claude
+optional tmux=absent
+optional no-mistakes=absent
+optional gh=~/.local/bin/gh
+check herdr=ok: ~/.local/bin/herdr
+check gui-session=ok: gui/501
+check remote-job-worker=fixable: ~/Library/LaunchAgents/dev.firstmate.remote-job.plist does not match the Firstmate-owned Aqua worker contract
+check remote-job-worker-loaded=fixable: gui/501/dev.firstmate.remote-job does not match the effective Firstmate-owned worker contract
+check remote-job-probe=ok: the remote job worker completed the required-tool probe
+check launchagent=fixable: ~/Library/LaunchAgents/dev.firstmate.herdr.fm-remote.plist does not match the current Firstmate-owned contract
+check launchagent-scope=ok: LimitLoadToSessionType=Aqua
+check launchagent-loaded=fixable: gui/501/dev.firstmate.herdr.fm-remote does not match the effective Firstmate-owned contract
+check herdr-server=ok: session fm-remote is running in the Aqua login session (pid 43916, launchd)
+check entrypoint-link=ok: ~/.local/bin/fm-remote-entrypoint.sh
+action: remote-job-worker: rerun this command with --fix to write dev.firstmate.remote-job
+action: remote-job-worker-loaded: rerun this command with --fix to reload the worker with the current launch-agent contract
+action: launchagent: rerun this command with --fix to rewrite its label, program arguments, session scope, process type, restart policy, and log paths
+action: launchagent-loaded: rerun this command with --fix to replace the loaded job with the current launch-agent contract
+exit=1
+error: this host is not ready for a remote second mate; unresolved: remote-job-worker remote-job-worker-loaded launchagent launchagent-loaded
+
+## head a883d122 doctor --fix
+mode=fix
+path=~/Developer/firstmate/bin:~/.local/bin:~/.nvm/versions/node/v22.17.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+entrypoint=yes
+platform=darwin
+fix remote-job-worker=applied: installed or reloaded dev.firstmate.remote-job
+fix launchagent=applied: wrote the Aqua-scoped dev.firstmate.herdr.fm-remote launch agent running ~/Developer/firstmate/bin/fm-remote-herdr-guard.sh for ~/.local/bin/herdr via /bin/zsh -l -c
+fix launchagent-loaded=failed: launchctl bootstrap gui/501 refused: Bootstrap failed: 5: Input/output error
+Try re-running the command as root for richer errors.
+required git=/usr/bin/git
+required jq=/usr/bin/jq
+required herdr=~/.local/bin/herdr
+required tasks-axi=~/.nvm/versions/node/v22.17.0/bin/tasks-axi
+required treehouse=~/.local/bin/treehouse
+required harness=claude:~/.local/bin/claude
+optional tmux=absent
+optional no-mistakes=absent
+optional gh=~/.local/bin/gh
+check herdr=ok: ~/.local/bin/herdr
+check gui-session=ok: gui/501
+check remote-job-worker=ok: ~/Library/LaunchAgents/dev.firstmate.remote-job.plist matches the Firstmate-owned Aqua worker contract
+check remote-job-worker-loaded=ok: dev.firstmate.remote-job is loaded in gui/501
+check remote-job-probe=ok: the remote job worker completed the required-tool probe
+check launchagent=ok: ~/Library/LaunchAgents/dev.firstmate.herdr.fm-remote.plist matches the Firstmate-owned contract
+check launchagent-scope=ok: LimitLoadToSessionType=Aqua
+check launchagent-loaded=fixable: dev.firstmate.herdr.fm-remote is not loaded into gui/501
+check herdr-server=fixable: the herdr server for session fm-remote is not running
+check entrypoint-link=ok: ~/.local/bin/fm-remote-entrypoint.sh
+action: launchagent-loaded: rerun this command with --fix to bootstrap and start it
+action: herdr-server: rerun this command with --fix to start it
+error: this host is not ready for a remote second mate; unresolved: launchagent-loaded herdr-server
+exit=1
+
+## immediately after --fix
+2026-11-26T17:08:27Z
+dev.firstmate.herdr.fm-remote.plist ProcessType=Interactive sha256=7625a2cfb6728819 mtime=2026-11-26T09:08:24-0800
+dev.firstmate.remote-job.plist ProcessType=Interactive sha256=7c7d1f6b7cfdd2a4 mtime=2026-11-26T09:08:13-0800
+dev.firstmate.herdr.fm-remote loaded: 
+dev.firstmate.remote-job loaded:  state = running; pid = 80628; spawn type = interactive (4);
+remote-job seq=2461 worker.lock entries=command pid start 
+80628 Thu Nov 26 09:08:23 2026     /bin/bash ~/Developer/firstmate/bin/fm-remote-job-worker.sh
+80744 Thu Nov 26 09:08:24 2026     /bin/bash ~/Developer/firstmate/bin/fm-remote-job-worker.sh
+
+## head a883d122 doctor read-only re-check
+mode=check
+path=~/Developer/firstmate/bin:~/.local/bin:~/.nvm/versions/node/v22.17.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+entrypoint=yes
+platform=darwin
+required git=/usr/bin/git
+required jq=/usr/bin/jq
+required herdr=~/.local/bin/herdr
+required tasks-axi=~/.nvm/versions/node/v22.17.0/bin/tasks-axi
+required treehouse=~/.local/bin/treehouse
+required harness=claude:~/.local/bin/claude
+optional tmux=absent
+optional no-mistakes=absent
+optional gh=~/.local/bin/gh
+check herdr=ok: ~/.local/bin/herdr
+check gui-session=ok: gui/501
+check remote-job-worker=ok: ~/Library/LaunchAgents/dev.firstmate.remote-job.plist matches the Firstmate-owned Aqua worker contract
+check remote-job-worker-loaded=ok: dev.firstmate.remote-job is loaded in gui/501
+check remote-job-probe=ok: the remote job worker completed the required-tool probe
+check launchagent=ok: ~/Library/LaunchAgents/dev.firstmate.herdr.fm-remote.plist matches the Firstmate-owned contract
+check launchagent-scope=ok: LimitLoadToSessionType=Aqua
+check launchagent-loaded=fixable: dev.firstmate.herdr.fm-remote is not loaded into gui/501
+check herdr-server=fixable: the herdr server for session fm-remote is not running
+check entrypoint-link=ok: ~/.local/bin/fm-remote-entrypoint.sh
+action: launchagent-loaded: rerun this command with --fix to bootstrap and start it
+action: herdr-server: rerun this command with --fix to start it
+exit=1
+
+2026-11-26T17:08:29Z
+error: this host is not ready for a remote second mate; unresolved: launchagent-loaded herdr-server
+dev.firstmate.herdr.fm-remote.plist ProcessType=Interactive sha256=7625a2cfb6728819 mtime=2026-11-26T09:08:24-0800
+dev.firstmate.remote-job.plist ProcessType=Interactive sha256=7c7d1f6b7cfdd2a4 mtime=2026-11-26T09:08:13-0800
+dev.firstmate.herdr.fm-remote loaded: 
+dev.firstmate.remote-job loaded:  state = running; pid = 80628; spawn type = interactive (4);
+remote-job seq=2462 worker.lock entries=command pid start 
+80628 Thu Nov 26 09:08:23 2026     /bin/bash ~/Developer/firstmate/bin/fm-remote-job-worker.sh
+80744 Thu Nov 26 09:08:24 2026     /bin/bash ~/Developer/firstmate/bin/fm-remote-job-worker.sh
+
+===== quiet-2-fix-again.txt
+## head a883d122 doctor --fix, second pass ~1 min after the failed bootstrap (nothing loaded, so no bootout this time)
+mode=fix
+path=~/Developer/firstmate/bin:~/.local/bin:~/.nvm/versions/node/v22.17.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+entrypoint=yes
+platform=darwin
+fix launchagent-loaded=applied: bootstrapped and started dev.firstmate.herdr.fm-remote in gui/501
+required git=/usr/bin/git
+required jq=/usr/bin/jq
+required herdr=~/.local/bin/herdr
+required tasks-axi=~/.nvm/versions/node/v22.17.0/bin/tasks-axi
+required treehouse=~/.local/bin/treehouse
+required harness=claude:~/.local/bin/claude
+optional tmux=absent
+optional no-mistakes=absent
+optional gh=~/.local/bin/gh
+check herdr=ok: ~/.local/bin/herdr
+check gui-session=ok: gui/501
+check remote-job-worker=ok: ~/Library/LaunchAgents/dev.firstmate.remote-job.plist matches the Firstmate-owned Aqua worker contract
+check remote-job-worker-loaded=ok: dev.firstmate.remote-job is loaded in gui/501
+check remote-job-probe=fixable: the remote job worker did not complete the required-tool probe
+check launchagent=ok: ~/Library/LaunchAgents/dev.firstmate.herdr.fm-remote.plist matches the Firstmate-owned contract
+check launchagent-scope=ok: LimitLoadToSessionType=Aqua
+check launchagent-loaded=ok: gui/501/dev.firstmate.herdr.fm-remote matches the effective contract
+check herdr-server=ok: session fm-remote is running in the Aqua login session (pid 83897, launchd)
+check entrypoint-link=ok: ~/.local/bin/fm-remote-entrypoint.sh
+action: remote-job-probe: rerun this command with --fix to restart the worker
+exit=1
+
+## after second --fix
+2026-11-26T17:21:22Z
+dev.firstmate.herdr.fm-remote.plist ProcessType=Interactive sha256=7625a2cfb6728819 mtime=2026-11-26T09:08:24-0800
+error: this host is not ready for a remote second mate; unresolved: remote-job-probe
+dev.firstmate.remote-job.plist ProcessType=absent sha256=77f7a9c79dbf4bc4 mtime=2026-11-26T09:08:53-0800
+dev.firstmate.herdr.fm-remote loaded:  state = running; pid = 83897; spawn type = interactive (4);
+dev.firstmate.remote-job loaded:  state = spawn scheduled; spawn type = daemon (3);
+remote-job seq=2463 worker.lock entries=.command.8rMJPX .pid.W3kAjx .start.G9vXeP 
+83897 Thu Nov 26 09:08:51 2026     ~/.local/bin/herdr server --session fm-remote
+
+## read-only re-check
+mode=check
+path=~/Developer/firstmate/bin:~/.local/bin:~/.nvm/versions/node/v22.17.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+entrypoint=yes
+platform=darwin
+required git=/usr/bin/git
+required jq=/usr/bin/jq
+required herdr=~/.local/bin/herdr
+required tasks-axi=~/.nvm/versions/node/v22.17.0/bin/tasks-axi
+required treehouse=~/.local/bin/treehouse
+required harness=claude:~/.local/bin/claude
+optional tmux=absent
+optional no-mistakes=absent
+optional gh=~/.local/bin/gh
+check herdr=ok: ~/.local/bin/herdr
+check gui-session=ok: gui/501
+check remote-job-worker=fixable: ~/Library/LaunchAgents/dev.firstmate.remote-job.plist does not match the Firstmate-owned Aqua worker contract
+check remote-job-worker-loaded=fixable: gui/501/dev.firstmate.remote-job does not match the effective Firstmate-owned worker contract
+check remote-job-probe=fixable: the remote job worker has not reported a fresh probe
+check launchagent=ok: ~/Library/LaunchAgents/dev.firstmate.herdr.fm-remote.plist matches the Firstmate-owned contract
+check launchagent-scope=ok: LimitLoadToSessionType=Aqua
+check launchagent-loaded=ok: gui/501/dev.firstmate.herdr.fm-remote matches the effective contract
+check herdr-server=ok: session fm-remote is running in the Aqua login session (pid 83897, launchd)
+check entrypoint-link=ok: ~/.local/bin/fm-remote-entrypoint.sh
+action: remote-job-worker: rerun this command with --fix to write dev.firstmate.remote-job
+action: remote-job-worker-loaded: rerun this command with --fix to reload the worker with the current launch-agent contract
+action: remote-job-probe: rerun this command with --fix to restart the worker, then rerun through fm-on.sh
+exit=1
+error: this host is not ready for a remote second mate; unresolved: remote-job-worker remote-job-worker-loaded remote-job-probe
+
+===== quiet-3-lock-repair.txt
+worker processes running: 0
+total 0
+drwx------  5 <user>  staff  160 Nov 26 09:08 .
+drwx------  8 <user>  staff  256 Nov 26 09:20 ..
+-rw-------  1 <user>  staff    0 Nov 26 09:08 .command.8rMJPX
+-rw-------  1 <user>  staff    0 Nov 26 09:08 .pid.W3kAjx
+-rw-------  1 <user>  staff    0 Nov 26 09:08 .start.G9vXeP
+removed stale lock at 2026-11-26T17:21:38Z
+
+===== quiet-4-fix-sticks.txt
+## head a883d122 doctor --fix, third pass (reply source retired, stale lock cleared)
+mode=fix
+path=~/Developer/firstmate/bin:~/.local/bin:~/.nvm/versions/node/v22.17.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+entrypoint=yes
+platform=darwin
+fix remote-job-worker=applied: installed or reloaded dev.firstmate.remote-job
+required git=/usr/bin/git
+required jq=/usr/bin/jq
+required herdr=~/.local/bin/herdr
+required tasks-axi=~/.nvm/versions/node/v22.17.0/bin/tasks-axi
+required treehouse=~/.local/bin/treehouse
+required harness=claude:~/.local/bin/claude
+optional tmux=absent
+optional no-mistakes=absent
+optional gh=~/.local/bin/gh
+check herdr=ok: ~/.local/bin/herdr
+check gui-session=ok: gui/501
+check remote-job-worker=ok: ~/Library/LaunchAgents/dev.firstmate.remote-job.plist matches the Firstmate-owned Aqua worker contract
+check remote-job-worker-loaded=ok: dev.firstmate.remote-job is loaded in gui/501
+check remote-job-probe=ok: the remote job worker completed the required-tool probe
+check launchagent=ok: ~/Library/LaunchAgents/dev.firstmate.herdr.fm-remote.plist matches the Firstmate-owned contract
+check launchagent-scope=ok: LimitLoadToSessionType=Aqua
+check launchagent-loaded=ok: gui/501/dev.firstmate.herdr.fm-remote matches the effective contract
+check herdr-server=ok: session fm-remote is running in the Aqua login session (pid 83897, launchd)
+check entrypoint-link=ok: ~/.local/bin/fm-remote-entrypoint.sh
+ok: remote second-mate readiness confirmed on this host
+exit=0
+
+## after third --fix
+2026-11-26T17:22:16Z
+dev.firstmate.herdr.fm-remote.plist ProcessType=Interactive sha256=7625a2cfb6728819 mtime=2026-11-26T09:08:24-0800
+dev.firstmate.remote-job.plist ProcessType=Interactive sha256=7c7d1f6b7cfdd2a4 mtime=2026-11-26T09:22:03-0800
+dev.firstmate.herdr.fm-remote loaded:  state = running; pid = 83897; spawn type = interactive (4);
+dev.firstmate.remote-job loaded:  state = running; pid = 47376; spawn type = interactive (4);
+remote-job seq=2464 worker.lock entries=command pid start 
+47376 Thu Nov 26 09:22:13 2026     /bin/bash ~/Developer/firstmate/bin/fm-remote-job-worker.sh
+47489 Thu Nov 26 09:22:13 2026     /bin/bash ~/Developer/firstmate/bin/fm-remote-job-worker.sh
+83897 Thu Nov 26 09:08:51 2026     ~/.local/bin/herdr server --session fm-remote
+
+## 60 s later: read-only re-check and state
+mode=check
+path=~/Developer/firstmate/bin:~/.local/bin:~/.nvm/versions/node/v22.17.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+entrypoint=yes
+platform=darwin
+required git=/usr/bin/git
+required jq=/usr/bin/jq
+required herdr=~/.local/bin/herdr
+required tasks-axi=~/.nvm/versions/node/v22.17.0/bin/tasks-axi
+required treehouse=~/.local/bin/treehouse
+required harness=claude:~/.local/bin/claude
+optional tmux=absent
+optional no-mistakes=absent
+optional gh=~/.local/bin/gh
+check herdr=ok: ~/.local/bin/herdr
+check gui-session=ok: gui/501
+check remote-job-worker=ok: ~/Library/LaunchAgents/dev.firstmate.remote-job.plist matches the Firstmate-owned Aqua worker contract
+check remote-job-worker-loaded=ok: dev.firstmate.remote-job is loaded in gui/501
+check remote-job-probe=ok: the remote job worker completed the required-tool probe
+check launchagent=ok: ~/Library/LaunchAgents/dev.firstmate.herdr.fm-remote.plist matches the Firstmate-owned contract
+check launchagent-scope=ok: LimitLoadToSessionType=Aqua
+check launchagent-loaded=ok: gui/501/dev.firstmate.herdr.fm-remote matches the effective contract
+check herdr-server=ok: session fm-remote is running in the Aqua login session (pid 83897, launchd)
+check entrypoint-link=ok: ~/.local/bin/fm-remote-entrypoint.sh
+ok: remote second-mate readiness confirmed on this host
+exit=0
+
+2026-11-26T17:23:18Z
+dev.firstmate.herdr.fm-remote.plist ProcessType=Interactive sha256=7625a2cfb6728819 mtime=2026-11-26T09:08:24-0800
+dev.firstmate.remote-job.plist ProcessType=Interactive sha256=7c7d1f6b7cfdd2a4 mtime=2026-11-26T09:22:03-0800
+dev.firstmate.herdr.fm-remote loaded:  state = running; pid = 83897; spawn type = interactive (4);
+dev.firstmate.remote-job loaded:  state = running; pid = 47376; spawn type = interactive (4);
+remote-job seq=2465 worker.lock entries=command pid start 
+47376 Thu Nov 26 09:22:13 2026     /bin/bash ~/Developer/firstmate/bin/fm-remote-job-worker.sh
+47489 Thu Nov 26 09:22:13 2026     /bin/bash ~/Developer/firstmate/bin/fm-remote-job-worker.sh
+83897 Thu Nov 26 09:08:51 2026     ~/.local/bin/herdr server --session fm-remote
+
+
+==================================================================
+FINAL LIVE DRIVE AT HEAD ae7b2921 (adds the Herdr bootout wait), 2026-11-26 ~18:04-18:06Z
+==================================================================
+Starting state: the host's own base doctor had just rewritten both agents to the base template and loaded them (quiet-5). Its own Herdr reload hit the same "Bootstrap failed: 5: Input/output error" and needed a second pass, which shows the missing wait predates this change. Both loaded jobs reported "spawn type = daemon (3)". The fm-remote session had no panes, and no supervising-side poller was calling the host.
+
+1. Read-only (final-1): launchagent, launchagent-loaded, remote-job-worker and remote-job-worker-loaded were all fixable (on-disk mismatch, plus loaded jobs that "do not match the effective ... contract"). The host was not ready.
+2. A single --fix pass (final-1): remote-job-worker applied. launchagent applied. launchagent-loaded applied: "bootstrapped and started dev.firstmate.herdr.fm-remote", first try, with no I/O error. Result: "ok: remote second-mate readiness confirmed on this host", exit 0. Both loaded jobs report "spawn type = interactive (4)" (Herdr server pid 66278, job worker pid 65928).
+3. Read-only 60 s later: still fully ready, both still interactive, and no entrypoint calls from elsewhere.
+4. Restore (final-2): the host's own base doctor --fix. Pass 1 rewrote both agents to base, and its Herdr bootstrap failed with I/O error 5 (base code has no wait). Pass 2 bootstrapped and confirmed readiness. Both agents are byte-identical to their original base files (sha256 247845c3..., 77f7a9c7...) and loaded as daemon (3). The host was left as it started.
+===== quiet-5-base-reset.txt
+## base reset before the new-head drive: host's own doctor --fix (base 2f000eb4), routed
+mode=fix
+path=~/Developer/firstmate/bin:~/.local/bin:~/.nvm/versions/node/v22.17.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+entrypoint=yes
+platform=darwin
+fix remote-job-worker=applied: installed or reloaded dev.firstmate.remote-job
+fix launchagent=applied: wrote the Aqua-scoped dev.firstmate.herdr.fm-remote launch agent running ~/Developer/firstmate/bin/fm-remote-herdr-guard.sh for ~/.local/bin/herdr via /bin/zsh -l -c
+fix launchagent-loaded=failed: launchctl bootstrap gui/501 refused: Bootstrap failed: 5: Input/output error
+Try re-running the command as root for richer errors.
+required git=/usr/bin/git
+required jq=/usr/bin/jq
+required herdr=~/.local/bin/herdr
+required tasks-axi=~/.nvm/versions/node/v22.17.0/bin/tasks-axi
+required treehouse=~/.local/bin/treehouse
+required harness=claude:~/.local/bin/claude
+optional tmux=absent
+optional no-mistakes=absent
+optional gh=~/.local/bin/gh
+check herdr=ok: ~/.local/bin/herdr
+check gui-session=ok: gui/501
+check remote-job-worker=ok: ~/Library/LaunchAgents/dev.firstmate.remote-job.plist matches the Firstmate-owned Aqua worker contract
+check remote-job-worker-loaded=ok: dev.firstmate.remote-job is loaded in gui/501
+check remote-job-probe=ok: the remote job worker completed the required-tool probe
+check launchagent=ok: ~/Library/LaunchAgents/dev.firstmate.herdr.fm-remote.plist matches the Firstmate-owned contract
+check launchagent-scope=ok: LimitLoadToSessionType=Aqua
+check launchagent-loaded=fixable: dev.firstmate.herdr.fm-remote is not loaded into gui/501
+check herdr-server=fixable: the herdr server for session fm-remote is not running
+check entrypoint-link=ok: ~/.local/bin/fm-remote-entrypoint.sh
+action: launchagent-loaded: rerun this command with --fix to bootstrap and start it
+action: herdr-server: rerun this command with --fix to start it
+error: this host is not ready for a remote second mate; unresolved: launchagent-loaded herdr-server
+exit=1
+
+2026-11-26T17:32:51Z
+dev.firstmate.herdr.fm-remote.plist ProcessType=absent sha256=247845c3a9d29ff1 mtime=2026-11-26T09:32:48-0800
+dev.firstmate.remote-job.plist ProcessType=absent sha256=77f7a9c79dbf4bc4 mtime=2026-11-26T09:32:37-0800
+dev.firstmate.herdr.fm-remote loaded: 
+dev.firstmate.remote-job loaded:  state = running; pid = 78274; spawn type = daemon (3);
+remote-job seq=2466 worker.lock entries=command pid start 
+78274 Thu Nov 26 09:32:47 2026     /bin/bash ~/Developer/firstmate/bin/fm-remote-job-worker.sh
+78402 Thu Nov 26 09:32:48 2026     /bin/bash ~/Developer/firstmate/bin/fm-remote-job-worker.sh
+## base reset, second pass: host's own doctor --fix (nothing loaded, so no bootout)
+mode=fix
+path=~/Developer/firstmate/bin:~/.local/bin:~/.nvm/versions/node/v22.17.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+entrypoint=yes
+platform=darwin
+fix launchagent-loaded=applied: bootstrapped and started dev.firstmate.herdr.fm-remote in gui/501
+required git=/usr/bin/git
+required jq=/usr/bin/jq
+required herdr=~/.local/bin/herdr
+required tasks-axi=~/.nvm/versions/node/v22.17.0/bin/tasks-axi
+required treehouse=~/.local/bin/treehouse
+required harness=claude:~/.local/bin/claude
+optional tmux=absent
+optional no-mistakes=absent
+optional gh=~/.local/bin/gh
+check herdr=ok: ~/.local/bin/herdr
+check gui-session=ok: gui/501
+check remote-job-worker=ok: ~/Library/LaunchAgents/dev.firstmate.remote-job.plist matches the Firstmate-owned Aqua worker contract
+check remote-job-worker-loaded=ok: dev.firstmate.remote-job is loaded in gui/501
+check remote-job-probe=ok: the remote job worker completed the required-tool probe
+check launchagent=ok: ~/Library/LaunchAgents/dev.firstmate.herdr.fm-remote.plist matches the Firstmate-owned contract
+check launchagent-scope=ok: LimitLoadToSessionType=Aqua
+check launchagent-loaded=ok: gui/501/dev.firstmate.herdr.fm-remote matches the effective contract
+check herdr-server=ok: session fm-remote is running in the Aqua login session (pid 80412, launchd)
+check entrypoint-link=ok: ~/.local/bin/fm-remote-entrypoint.sh
+ok: remote second-mate readiness confirmed on this host
+exit=0
+
+2026-11-26T17:33:11Z
+dev.firstmate.herdr.fm-remote.plist ProcessType=absent sha256=247845c3a9d29ff1 mtime=2026-11-26T09:32:48-0800
+dev.firstmate.remote-job.plist ProcessType=absent sha256=77f7a9c79dbf4bc4 mtime=2026-11-26T09:32:37-0800
+dev.firstmate.herdr.fm-remote loaded:  state = running; pid = 80412; spawn type = daemon (3);
+dev.firstmate.remote-job loaded:  state = running; pid = 78274; spawn type = daemon (3);
+remote-job seq=2467 worker.lock entries=command pid start 
+78274 Thu Nov 26 09:32:47 2026     /bin/bash ~/Developer/firstmate/bin/fm-remote-job-worker.sh
+78402 Thu Nov 26 09:32:48 2026     /bin/bash ~/Developer/firstmate/bin/fm-remote-job-worker.sh
+80412 Thu Nov 26 09:33:08 2026     ~/.local/bin/herdr server --session fm-remote
+
+===== final-1-drive.txt
+## new head ae7b2921 (adds the bootout wait): before
+2026-11-26T18:04:19Z
+dev.firstmate.herdr.fm-remote.plist ProcessType=absent sha256=247845c3a9d29ff1 mtime=2026-11-26T09:32:48-0800
+dev.firstmate.remote-job.plist ProcessType=absent sha256=77f7a9c79dbf4bc4 mtime=2026-11-26T09:32:37-0800
+dev.firstmate.herdr.fm-remote loaded:  state = running; pid = 80412; spawn type = daemon (3);
+dev.firstmate.remote-job loaded:  state = running; pid = 78274; spawn type = daemon (3);
+remote-job seq=2467 worker.lock entries=command pid start 
+78274 Thu Nov 26 09:32:47 2026     /bin/bash ~/Developer/firstmate/bin/fm-remote-job-worker.sh
+78402 Thu Nov 26 09:32:48 2026     /bin/bash ~/Developer/firstmate/bin/fm-remote-job-worker.sh
+80412 Thu Nov 26 09:33:08 2026     ~/.local/bin/herdr server --session fm-remote
+
+## read-only
+mode=check
+path=~/Developer/firstmate/bin:~/.local/bin:~/.nvm/versions/node/v22.17.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+entrypoint=yes
+platform=darwin
+required git=/usr/bin/git
+required jq=/usr/bin/jq
+required herdr=~/.local/bin/herdr
+required tasks-axi=~/.nvm/versions/node/v22.17.0/bin/tasks-axi
+required treehouse=~/.local/bin/treehouse
+required harness=claude:~/.local/bin/claude
+optional tmux=absent
+optional no-mistakes=absent
+optional gh=~/.local/bin/gh
+check herdr=ok: ~/.local/bin/herdr
+check gui-session=ok: gui/501
+check remote-job-worker=fixable: ~/Library/LaunchAgents/dev.firstmate.remote-job.plist does not match the Firstmate-owned Aqua worker contract
+check remote-job-worker-loaded=fixable: gui/501/dev.firstmate.remote-job does not match the effective Firstmate-owned worker contract
+check remote-job-probe=ok: the remote job worker completed the required-tool probe
+check launchagent=fixable: ~/Library/LaunchAgents/dev.firstmate.herdr.fm-remote.plist does not match the current Firstmate-owned contract
+check launchagent-scope=ok: LimitLoadToSessionType=Aqua
+check launchagent-loaded=fixable: gui/501/dev.firstmate.herdr.fm-remote does not match the effective Firstmate-owned contract
+check herdr-server=ok: session fm-remote is running in the Aqua login session (pid 80412, launchd)
+check entrypoint-link=ok: ~/.local/bin/fm-remote-entrypoint.sh
+action: remote-job-worker: rerun this command with --fix to write dev.firstmate.remote-job
+action: remote-job-worker-loaded: rerun this command with --fix to reload the worker with the current launch-agent contract
+action: launchagent: rerun this command with --fix to rewrite its label, program arguments, session scope, process type, restart policy, and log paths
+action: launchagent-loaded: rerun this command with --fix to replace the loaded job with the current launch-agent contract
+exit=1
+error: this host is not ready for a remote second mate; unresolved: remote-job-worker remote-job-worker-loaded launchagent launchagent-loaded
+
+## --fix (single pass)
+mode=fix
+path=~/Developer/firstmate/bin:~/.local/bin:~/.nvm/versions/node/v22.17.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+entrypoint=yes
+platform=darwin
+fix remote-job-worker=applied: installed or reloaded dev.firstmate.remote-job
+fix launchagent=applied: wrote the Aqua-scoped dev.firstmate.herdr.fm-remote launch agent running ~/Developer/firstmate/bin/fm-remote-herdr-guard.sh for ~/.local/bin/herdr via /bin/zsh -l -c
+fix launchagent-loaded=applied: bootstrapped and started dev.firstmate.herdr.fm-remote in gui/501
+required git=/usr/bin/git
+required jq=/usr/bin/jq
+required herdr=~/.local/bin/herdr
+required tasks-axi=~/.nvm/versions/node/v22.17.0/bin/tasks-axi
+required treehouse=~/.local/bin/treehouse
+required harness=claude:~/.local/bin/claude
+optional tmux=absent
+optional no-mistakes=absent
+optional gh=~/.local/bin/gh
+check herdr=ok: ~/.local/bin/herdr
+check gui-session=ok: gui/501
+check remote-job-worker=ok: ~/Library/LaunchAgents/dev.firstmate.remote-job.plist matches the Firstmate-owned Aqua worker contract
+check remote-job-worker-loaded=ok: dev.firstmate.remote-job is loaded in gui/501
+check remote-job-probe=ok: the remote job worker completed the required-tool probe
+check launchagent=ok: ~/Library/LaunchAgents/dev.firstmate.herdr.fm-remote.plist matches the Firstmate-owned contract
+check launchagent-scope=ok: LimitLoadToSessionType=Aqua
+check launchagent-loaded=ok: gui/501/dev.firstmate.herdr.fm-remote matches the effective contract
+check herdr-server=ok: session fm-remote is running in the Aqua login session (pid 66278, launchd)
+check entrypoint-link=ok: ~/.local/bin/fm-remote-entrypoint.sh
+ok: remote second-mate readiness confirmed on this host
+exit=0
+
+## immediately after --fix
+2026-11-26T18:04:37Z
+dev.firstmate.herdr.fm-remote.plist ProcessType=Interactive sha256=7625a2cfb6728819 mtime=2026-11-26T10:04:34-0800
+dev.firstmate.remote-job.plist ProcessType=Interactive sha256=7c7d1f6b7cfdd2a4 mtime=2026-11-26T10:04:23-0800
+dev.firstmate.herdr.fm-remote loaded:  state = running; pid = 66278; spawn type = interactive (4);
+dev.firstmate.remote-job loaded:  state = running; pid = 65928; spawn type = interactive (4);
+remote-job seq=2469 worker.lock entries=command pid start 
+65928 Thu Nov 26 10:04:33 2026     /bin/bash ~/Developer/firstmate/bin/fm-remote-job-worker.sh
+66046 Thu Nov 26 10:04:33 2026     /bin/bash ~/Developer/firstmate/bin/fm-remote-job-worker.sh
+66278 Thu Nov 26 10:04:34 2026     ~/.local/bin/herdr server --session fm-remote
+
+## 60 s later: read-only re-check
+mode=check
+path=~/Developer/firstmate/bin:~/.local/bin:~/.nvm/versions/node/v22.17.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+entrypoint=yes
+platform=darwin
+required git=/usr/bin/git
+required jq=/usr/bin/jq
+required herdr=~/.local/bin/herdr
+required tasks-axi=~/.nvm/versions/node/v22.17.0/bin/tasks-axi
+required treehouse=~/.local/bin/treehouse
+required harness=claude:~/.local/bin/claude
+optional tmux=absent
+optional no-mistakes=absent
+optional gh=~/.local/bin/gh
+check herdr=ok: ~/.local/bin/herdr
+check gui-session=ok: gui/501
+check remote-job-worker=ok: ~/Library/LaunchAgents/dev.firstmate.remote-job.plist matches the Firstmate-owned Aqua worker contract
+check remote-job-worker-loaded=ok: dev.firstmate.remote-job is loaded in gui/501
+check remote-job-probe=ok: the remote job worker completed the required-tool probe
+check launchagent=ok: ~/Library/LaunchAgents/dev.firstmate.herdr.fm-remote.plist matches the Firstmate-owned contract
+check launchagent-scope=ok: LimitLoadToSessionType=Aqua
+check launchagent-loaded=ok: gui/501/dev.firstmate.herdr.fm-remote matches the effective contract
+check herdr-server=ok: session fm-remote is running in the Aqua login session (pid 66278, launchd)
+check entrypoint-link=ok: ~/.local/bin/fm-remote-entrypoint.sh
+ok: remote second-mate readiness confirmed on this host
+exit=0
+
+2026-11-26T18:05:40Z
+dev.firstmate.herdr.fm-remote.plist ProcessType=Interactive sha256=7625a2cfb6728819 mtime=2026-11-26T10:04:34-0800
+dev.firstmate.remote-job.plist ProcessType=Interactive sha256=7c7d1f6b7cfdd2a4 mtime=2026-11-26T10:04:23-0800
+dev.firstmate.herdr.fm-remote loaded:  state = running; pid = 66278; spawn type = interactive (4);
+dev.firstmate.remote-job loaded:  state = running; pid = 65928; spawn type = interactive (4);
+remote-job seq=2470 worker.lock entries=command pid start 
+65928 Thu Nov 26 10:04:33 2026     /bin/bash ~/Developer/firstmate/bin/fm-remote-job-worker.sh
+66046 Thu Nov 26 10:04:33 2026     /bin/bash ~/Developer/firstmate/bin/fm-remote-job-worker.sh
+66278 Thu Nov 26 10:04:34 2026     ~/.local/bin/herdr server --session fm-remote
+
+===== final-2-restore.txt
+## restore pass 1: host's own doctor --fix (base 2f000eb4), routed
+mode=fix
+path=~/Developer/firstmate/bin:~/.local/bin:~/.nvm/versions/node/v22.17.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+entrypoint=yes
+platform=darwin
+fix remote-job-worker=applied: installed or reloaded dev.firstmate.remote-job
+fix launchagent=applied: wrote the Aqua-scoped dev.firstmate.herdr.fm-remote launch agent running ~/Developer/firstmate/bin/fm-remote-herdr-guard.sh for ~/.local/bin/herdr via /bin/zsh -l -c
+fix launchagent-loaded=failed: launchctl bootstrap gui/501 refused: Bootstrap failed: 5: Input/output error
+Try re-running the command as root for richer errors.
+required git=/usr/bin/git
+required jq=/usr/bin/jq
+required herdr=~/.local/bin/herdr
+required tasks-axi=~/.nvm/versions/node/v22.17.0/bin/tasks-axi
+required treehouse=~/.local/bin/treehouse
+required harness=claude:~/.local/bin/claude
+optional tmux=absent
+optional no-mistakes=absent
+optional gh=~/.local/bin/gh
+check herdr=ok: ~/.local/bin/herdr
+check gui-session=ok: gui/501
+check remote-job-worker=ok: ~/Library/LaunchAgents/dev.firstmate.remote-job.plist matches the Firstmate-owned Aqua worker contract
+check remote-job-worker-loaded=ok: dev.firstmate.remote-job is loaded in gui/501
+check remote-job-probe=ok: the remote job worker completed the required-tool probe
+check launchagent=ok: ~/Library/LaunchAgents/dev.firstmate.herdr.fm-remote.plist matches the Firstmate-owned contract
+check launchagent-scope=ok: LimitLoadToSessionType=Aqua
+check launchagent-loaded=fixable: dev.firstmate.herdr.fm-remote is not loaded into gui/501
+check herdr-server=fixable: the herdr server for session fm-remote is not running
+check entrypoint-link=ok: ~/.local/bin/fm-remote-entrypoint.sh
+action: launchagent-loaded: rerun this command with --fix to bootstrap and start it
+action: herdr-server: rerun this command with --fix to start it
+error: this host is not ready for a remote second mate; unresolved: launchagent-loaded herdr-server
+exit=1
+
+## restore pass 2: host's own doctor --fix (base 2f000eb4), routed
+mode=fix
+path=~/Developer/firstmate/bin:~/.local/bin:~/.nvm/versions/node/v22.17.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+entrypoint=yes
+platform=darwin
+fix launchagent-loaded=applied: bootstrapped and started dev.firstmate.herdr.fm-remote in gui/501
+required git=/usr/bin/git
+required jq=/usr/bin/jq
+required herdr=~/.local/bin/herdr
+required tasks-axi=~/.nvm/versions/node/v22.17.0/bin/tasks-axi
+required treehouse=~/.local/bin/treehouse
+required harness=claude:~/.local/bin/claude
+optional tmux=absent
+optional no-mistakes=absent
+optional gh=~/.local/bin/gh
+check herdr=ok: ~/.local/bin/herdr
+check gui-session=ok: gui/501
+check remote-job-worker=ok: ~/Library/LaunchAgents/dev.firstmate.remote-job.plist matches the Firstmate-owned Aqua worker contract
+check remote-job-worker-loaded=ok: dev.firstmate.remote-job is loaded in gui/501
+check remote-job-probe=ok: the remote job worker completed the required-tool probe
+check launchagent=ok: ~/Library/LaunchAgents/dev.firstmate.herdr.fm-remote.plist matches the Firstmate-owned contract
+check launchagent-scope=ok: LimitLoadToSessionType=Aqua
+check launchagent-loaded=ok: gui/501/dev.firstmate.herdr.fm-remote matches the effective contract
+check herdr-server=ok: session fm-remote is running in the Aqua login session (pid 74030, launchd)
+check entrypoint-link=ok: ~/.local/bin/fm-remote-entrypoint.sh
+ok: remote second-mate readiness confirmed on this host
+exit=0
+
+## after restore
+2026-11-26T18:06:13Z
+dev.firstmate.herdr.fm-remote.plist ProcessType=absent sha256=247845c3a9d29ff1 mtime=2026-11-26T10:06:06-0800
+dev.firstmate.remote-job.plist ProcessType=absent sha256=77f7a9c79dbf4bc4 mtime=2026-11-26T10:05:55-0800
+dev.firstmate.herdr.fm-remote loaded:  state = running; pid = 74030; spawn type = daemon (3);
+dev.firstmate.remote-job loaded:  state = running; pid = 72633; spawn type = daemon (3);
+remote-job seq=2472 worker.lock entries=command pid start 
+72633 Thu Nov 26 10:06:05 2026     /bin/bash ~/Developer/firstmate/bin/fm-remote-job-worker.sh
+72760 Thu Nov 26 10:06:05 2026     /bin/bash ~/Developer/firstmate/bin/fm-remote-job-worker.sh
+74030 Thu Nov 26 10:06:09 2026     ~/.local/bin/herdr server --session fm-remote
+

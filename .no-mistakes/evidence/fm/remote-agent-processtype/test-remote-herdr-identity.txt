@@ -1,0 +1,8 @@
+## tests/fm-remote-herdr-identity.test.sh at ae7b2921, test round 3
+ok - A a second code root launches, routes, and reads its mate in its own Herdr session
+ok - B a second code root refuses an endpoint in the primary session
+ok - C the owning code root keeps the primary fm-remote session
+ok - D the parent accepts only the primary or a code-root-derived session
+ok - E legacy ownership decodes spaces, apostrophes, and backslashes without changing service identity
+ALL TESTS PASSED
+exit=0

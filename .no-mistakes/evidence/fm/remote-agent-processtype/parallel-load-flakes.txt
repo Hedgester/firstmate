@@ -1,0 +1,8 @@
+## Parallel-load runs (three suites at once) at ae7b2921 — each failure passed when its suite was re-run alone
+### fm-remote-job-launchagent.test.sh
+ensure failed: timed out waiting for the remote job LaunchAgent repair lock
+not ok - a concurrent Darwin ensure failed
+exit=1
+### fm-remote-doctor.test.sh
+not ok - the doctor did not handle INT during takeover: expected exit 130, got 1
+exit=1
