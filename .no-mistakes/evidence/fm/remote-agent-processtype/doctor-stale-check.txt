@@ -1,0 +1,30 @@
+$ bin/fm-remote-doctor.sh   # both plists stripped of ProcessType only
+mode=check
+path=$TMP/case2/home/.local/bin:$TMP/case2/bin:$TMP/tools:/usr/bin:/bin:/usr/sbin:/sbin
+entrypoint=no
+note: not launched through the fixed remote entrypoint; the reported PATH is this caller environment.
+platform=darwin
+required git=$TMP/tools/git
+required jq=$TMP/tools/jq
+required herdr=$TMP/case2/bin/herdr
+required tasks-axi=$TMP/case2/bin/tasks-axi
+required treehouse=$TMP/case2/bin/treehouse
+required harness=claude:$TMP/case2/bin/claude
+optional tmux=absent
+optional no-mistakes=absent
+optional gh=absent
+check herdr=ok: $TMP/case2/bin/herdr
+check gui-session=ok: gui/501
+check remote-job-worker=fixable: $TMP/case2/home/Library/LaunchAgents/dev.firstmate.remote-job.plist does not match the Firstmate-owned Aqua worker contract
+check remote-job-worker-loaded=ok: dev.firstmate.remote-job is loaded in gui/501
+check remote-job-probe=ok: the remote job worker published a fresh heartbeat
+check launchagent=fixable: $TMP/case2/home/Library/LaunchAgents/dev.firstmate.herdr.fm-remote.plist does not match the current Firstmate-owned contract
+check launchagent-scope=ok: LimitLoadToSessionType=Aqua
+check launchagent-loaded=ok: gui/501/dev.firstmate.herdr.fm-remote matches the effective contract
+check herdr-server=ok: session fm-remote is running in the Aqua login session (pid 57884, launchd)
+check entrypoint-link=skip: this run did not come through the fixed remote entrypoint
+action: remote-job-worker: rerun this command with --fix to write dev.firstmate.remote-job
+action: launchagent: rerun this command with --fix to rewrite its label, program arguments, session scope, process type, restart policy, and log paths
+error: this host is not ready for a remote second mate; unresolved: remote-job-worker launchagent
+exit=1
+

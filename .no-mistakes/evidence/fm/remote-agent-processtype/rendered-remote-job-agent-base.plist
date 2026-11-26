@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>dev.firstmate.lab-nm.without</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/private/var/folders/8w/zv76npy957ndb_2ysbn15fcw0000gn/T/fm-lab.L1XWOq/root/bin/fm-remote-job-worker.sh</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>/private/var/folders/8w/zv76npy957ndb_2ysbn15fcw0000gn/T/fm-lab.L1XWOq/home</string>
+		<key>FM_ROOT_OVERRIDE</key>
+		<string>/private/var/folders/8w/zv76npy957ndb_2ysbn15fcw0000gn/T/fm-lab.L1XWOq/root</string>
+	</dict>
+	<key>LimitLoadToSessionType</key>
+	<string>Aqua</string>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>/private/var/folders/8w/zv76npy957ndb_2ysbn15fcw0000gn/T/fm-lab.L1XWOq/home/Library/Logs/dev.firstmate.lab-nm.without.log</string>
+	<key>StandardErrorPath</key>
+	<string>/private/var/folders/8w/zv76npy957ndb_2ysbn15fcw0000gn/T/fm-lab.L1XWOq/home/Library/Logs/dev.firstmate.lab-nm.without.log</string>
+</dict>
+</plist>

@@ -1,0 +1,62 @@
+$ bin/fm-remote-doctor.sh --fix
+mode=fix
+path=$TMP/case2/home/.local/bin:$TMP/case2/bin:$TMP/tools:/usr/bin:/bin:/usr/sbin:/sbin
+entrypoint=no
+note: not launched through the fixed remote entrypoint; the reported PATH is this caller environment.
+platform=darwin
+fix remote-job-worker=applied: installed or reloaded dev.firstmate.remote-job
+fix launchagent=applied: wrote the Aqua-scoped dev.firstmate.herdr.fm-remote launch agent running $WORKTREE/bin/fm-remote-herdr-guard.sh for $TMP/case2/bin/herdr via /bin/sh -l -c
+fix launchagent-loaded=applied: bootstrapped and started dev.firstmate.herdr.fm-remote in gui/501
+required git=$TMP/tools/git
+required jq=$TMP/tools/jq
+required herdr=$TMP/case2/bin/herdr
+required tasks-axi=$TMP/case2/bin/tasks-axi
+required treehouse=$TMP/case2/bin/treehouse
+required harness=claude:$TMP/case2/bin/claude
+optional tmux=absent
+optional no-mistakes=absent
+optional gh=absent
+check herdr=ok: $TMP/case2/bin/herdr
+check gui-session=ok: gui/501
+check remote-job-worker=ok: $TMP/case2/home/Library/LaunchAgents/dev.firstmate.remote-job.plist matches the Firstmate-owned Aqua worker contract
+check remote-job-worker-loaded=ok: dev.firstmate.remote-job is loaded in gui/501
+check remote-job-probe=ok: the remote job worker published a fresh heartbeat
+check launchagent=ok: $TMP/case2/home/Library/LaunchAgents/dev.firstmate.herdr.fm-remote.plist matches the Firstmate-owned contract
+check launchagent-scope=ok: LimitLoadToSessionType=Aqua
+check launchagent-loaded=ok: gui/501/dev.firstmate.herdr.fm-remote matches the effective contract
+check herdr-server=ok: session fm-remote is running in the Aqua login session (pid 57884, launchd)
+check entrypoint-link=skip: this run did not come through the fixed remote entrypoint
+ok: remote second-mate readiness confirmed on this host
+exit=0
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>dev.firstmate.herdr.fm-remote</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/sh</string>
+		<string>-l</string>
+		<string>-c</string>
+		<string>exec '$WORKTREE/bin/fm-remote-herdr-guard.sh' '$TMP/case2/bin/herdr' 'fm-remote'</string>
+	</array>
+	<key>LimitLoadToSessionType</key>
+	<string>Aqua</string>
+	<key>ProcessType</key>
+	<string>Interactive</string>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>StandardOutPath</key>
+	<string>$TMP/case2/home/Library/Logs/dev.firstmate.herdr.fm-remote.log</string>
+	<key>StandardErrorPath</key>
+	<string>$TMP/case2/home/Library/Logs/dev.firstmate.herdr.fm-remote.log</string>
+</dict>
+</plist>

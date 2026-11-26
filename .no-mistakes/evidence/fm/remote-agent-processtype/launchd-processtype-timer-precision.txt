@@ -1,0 +1,53 @@
+Live launchd timer-precision check on this macOS 15.5 host (Apple Silicon), gui/<uid> domain.
+Both agents were rendered by the product's own fm_remote_job_render_launchagent: one from the base commit 9a429a42 (no ProcessType), one from the head commit 8b5c3353 (ProcessType=Interactive).
+Only the throwaway label and a disposable root/home differ. The lab worker script ($LAB/root/bin/fm-remote-job-worker.sh) runs python3 in a child process: 50x time.sleep(0.01), and a SQLite connect(timeout=0.5) against a held exclusive lock.
+
+== rendered plist diff (base -> head), lab paths elided
+6c6
+< 	<string>dev.firstmate.lab-nm.without</string>
+---
+> 	<string>dev.firstmate.lab-nm.with</string>
+19a20,21
+> 	<key>ProcessType</key>
+> 	<string>Interactive</string>
+25c27
+< 	<string>$LAB/home/Library/Logs/dev.firstmate.lab-nm.without.log</string>
+---
+> 	<string>$LAB/home/Library/Logs/dev.firstmate.lab-nm.with.log</string>
+27c29
+< 	<string>$LAB/home/Library/Logs/dev.firstmate.lab-nm.without.log</string>
+---
+> 	<string>$LAB/home/Library/Logs/dev.firstmate.lab-nm.with.log</string>
+
+== launchctl print gui/<uid>/dev.firstmate.lab-nm.without (selected lines)
+  	state = running
+  	program = $LAB/root/bin/fm-remote-job-worker.sh
+  	spawn type = daemon (3)
+  	jetsam priority = 40
+  	jetsam memory limit (active) = (unlimited)
+  	jetsam memory limit (inactive) = (unlimited)
+  	jetsamproperties category = daemon
+  	jetsam thread limit = 32
+  	probabilistic guard malloc policy = {
+== launchctl print gui/<uid>/dev.firstmate.lab-nm.with (selected lines)
+  	state = running
+  	program = $LAB/root/bin/fm-remote-job-worker.sh
+  	spawn type = interactive (4)
+  	jetsam priority = 40
+  	jetsam memory limit (active) = (unlimited)
+  	jetsam memory limit (inactive) = (unlimited)
+  	jetsamproperties category = daemon
+  	jetsam thread limit = 32
+  	probabilistic guard malloc policy = {
+
+== benchmark results, 4 alternating rounds (ideal: sleep 0.50 s, busy_timeout 0.50 s)
+  head (ProcessType=Interactive): sleep50x10ms=0.672s busy_timeout500ms=0.572s
+  head (ProcessType=Interactive): sleep50x10ms=0.693s busy_timeout500ms=0.569s
+  head (ProcessType=Interactive): sleep50x10ms=0.672s busy_timeout500ms=0.562s
+  head (ProcessType=Interactive): sleep50x10ms=0.686s busy_timeout500ms=0.566s
+  base (no ProcessType)      : sleep50x10ms=3.338s busy_timeout500ms=1.657s
+  base (no ProcessType)      : sleep50x10ms=3.810s busy_timeout500ms=2.034s
+  base (no ProcessType)      : sleep50x10ms=3.568s busy_timeout500ms=1.816s
+  base (no ProcessType)      : sleep50x10ms=3.521s busy_timeout500ms=1.869s
+
+Note: the agent harness's own shell on this host is itself a descendant of a background launchd job, and showed the same coarsening (50x10ms = 3.77 s), so it is not a clean non-launchd baseline. The intent's 0.64-0.68 s figure over plain ssh matches the head agent.
